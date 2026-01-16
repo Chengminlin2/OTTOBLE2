@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Otto Web BLE Controller</title>
+<style>
+  body { font-family: Arial, sans-serif; text-align:center; background:#f9f9f9; margin:0; padding:24px; }
+  button{
+      width:160px; height:56px; margin:8px; font-size:16px;
+      border:none; border-radius:10px; background:#4CAF50; color:white;
+      cursor:pointer;
+  }
+  button:disabled{ opacity:.5; cursor:not-allowed; }
+  button.red{ background:#d9534f; }
+  button.blue{ background:#0275d8; }
+  button.gray{ background:#6c757d; }
+  .container{ margin-top:18px; }
+  .panel{
+      max-width:760px; margin:14px auto; background:#fff; border-radius:14px;
+      padding:14px 12px; box-shadow:0 2px 10px rgba(0,0,0,.06);
+  }
+  .row{ display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:8px 0; }
+  .row button{ margin:0; }
+  .status{ font-size:14px; color:#333; }
+  .hint{ font-size:12px; color:#666; margin-top:6px; }
+  .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  .log{
+      text-align:left; max-width:760px; margin:10px auto 0; background:#111; color:#eee;
+      padding:10px 12px; border-radius:10px; font-size:12px; height:160px; overflow:auto;
+  }
+  input[type="range"]{ width:260px; }
+  .badge{ display:inline-block; padding:2px 8px; border-radius:999px; background:#eee; font-size:12px; }
+</style>
+</head>
+
+<body>
+  <h2>OTTO BLE 遙控器</h2>
+
+  <div class="panel">
+    <div class="row">
+      <button id="connectBle" class="blue">連線 / Connect</button>
+      <button id="disconnectBle" class="red" disabled>中斷 / Disconnect</button>
+    </div>
+    <p id="status" class="status">尚未連線</p>
+
+    <div class="row" style="align-items:center;">
+      <span class="badge">速度</span>
+      <input id="speed" type="range" min="0" max="5" step="1" value="2" />
+      <span id="speedLabel" class="mono">2</span>
+    </div>
+    <div class="hint">
+      指令格式：<span class="mono">command + speedIndex + "\\n"</span>（例如 <span class="mono">forward2</span>）
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>移動 / Move</h3>
+    <div class="container">
+      <div class="row">
+        <button onclick="sendMove('forward')">⬆ 前進 / Forward</button>
+      </div>
+
+      <div class="row">
+        <button onclick="sendMove('left')">⬅ 左轉 / Left</button>
+        <button onclick="sendMove('stop')" class="red">⏹ 停止 / Stop</button>
+        <button onclick="sendMove('right')">➡ 右轉 / Right</button>
+      </div>
+
+      <div class="row">
+        <button onclick="sendMove('backward')">⬇ 後退 / Backward</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>超音波互動 / Ultrasound</h3>
+    <div class="row">
+      <button id="btnUsOnce" class="blue">量測一次 (ultrasound)</button>
+      <button id="btnAutoOn" class="gray">自動避障 ON</button>
+      <button id="btnAutoOff" class="gray">自動避障 OFF</button>
+    </div>
+    <div class="row">
+      <button id="btnStreamOn" class="gray">距離串流 ON</button>
+      <button id="btnStreamOff" class="gray">距離串流 OFF</button>
+    </div>
+
+    <p class="status">
+      距離：<span id="usValue" class="mono">--</span> cm
+      <span id="autoBadge" class="badge">AUTOAVOID:OFF</span>
+      <span id="streamBadge" class="badge">US_STREAM:OFF</span>
+    </p>
+    <div class="hint">
+      需要 Arduino 端支援指令：<span class="mono">autoavoid_on</span> / <span class="mono">autoavoid_off</span> /
+      <span class="mono">us_stream_on</span> / <span class="mono">us_stream_off</span>（皆會帶 speedIndex 與換行）
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>表情與動作 / Emotions & Gestures</h3>
+    <div class="row">
+      <button onclick="sendGesture('happy')">開心 / Happy</button>
+      <button onclick="sendGesture('superhappy')">超開心 / Super Happy</button>
+      <button onclick="sendGesture('sad')">難過 / Sad</button>
+      <button onclick="sendGesture('sleeping')">睡覺 / Sleeping</button>
+    </div>
+    <div class="row">
+      <button onclick="sendGesture('confused')">困惑 / Confused</button>
+      <button onclick="sendGesture('fretful')">煩躁 / Fretful</button>
+      <button onclick="sendGesture('love')">愛心 / Love</button>
+      <button onclick="sendGesture('angry')">生氣 / Angry</button>
+    </div>
+    <div class="row">
+      <button onclick="sendGesture('magic')">魔法 / Magic</button>
+      <button onclick="sendGesture('wave')">揮手 / Wave</button>
+      <button onclick="sendGesture('victory')">勝利 / Victory</button>
+      <button onclick="sendGesture('fail')">失敗 / Fail</button>
+    </div>
+    <div class="row">
+      <button onclick="sendGesture('fart')">放屁 / Fart</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <img src="2_01.png" alt="Otto" style="max-width:320px; width:100%; height:auto;" />
+  </div>
+
+  <div id="log" class="log" aria-label="log"></div>
+
+<script>
+let device, server, uartService, tx, rx;
+let speedIndex = 2;
+
+const SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
+const CHAR_UUID    = "0000ffe1-0000-1000-8000-00805f9b34fb";
+
+const connectBtn    = document.getElementById("connectBle");
+const disconnectBtn = document.getElementById("disconnectBle");
+const statusEl      = document.getElementById("status");
+const logEl         = document.getElementById("log");
+
+const speedEl       = document.getElementById("speed");
+const speedLabelEl  = document.getElementById("speedLabel");
+
+const usValueEl     = document.getElementById("usValue");
+const autoBadgeEl   = document.getElementById("autoBadge");
+const streamBadgeEl = document.getElementById("streamBadge");
+
+const btnUsOnce     = document.getElementById("btnUsOnce");
+const btnAutoOn     = document.getElementById("btnAutoOn");
+const btnAutoOff    = document.getElementById("btnAutoOff");
+const btnStreamOn   = document.getElementById("btnStreamOn");
+const btnStreamOff  = document.getElementById("btnStreamOff");
+
+let rxBuffer = "";
+
+// UI：速度滑桿
+speedEl.addEventListener("input", () => {
+  speedIndex = Number(speedEl.value);
+  speedLabelEl.textContent = String(speedIndex);
+});
+
+// Log helper
+function logLine(s){
+  const time = new Date().toLocaleTimeString();
+  logEl.textContent += `[${time}] ${s}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setConnectedUI(connected){
+  connectBtn.disabled = connected;
+  disconnectBtn.disabled = !connected;
+
+  // 超音波按鈕也跟著鎖定
+  btnUsOnce.disabled   = !connected;
+  btnAutoOn.disabled   = !connected;
+  btnAutoOff.disabled  = !connected;
+  btnStreamOn.disabled = !connected;
+  btnStreamOff.disabled= !connected;
+}
+
+// 連線
+connectBtn.onclick = async () => {
+  try{
+    device = await navigator.bluetooth.requestDevice({
+      // namePrefix 用在不同模組命名（Otto / NFU-...）比較彈性
+      filters: [
+        { namePrefix: "Otto" },
+        { namePrefix: "NFU" }
+      ],
+      optionalServices: [SERVICE_UUID]
+    });
+
+    device.addEventListener("gattserverdisconnected", onDisconnected);
+
+    server = await device.gatt.connect();
+    uartService = await server.getPrimaryService(SERVICE_UUID);
+
+    // 多數 BLE 串口模組是同一個 characteristic 負責讀/寫
+    tx = await uartService.getCharacteristic(CHAR_UUID);
+    rx = tx;
+
+    // 開啟通知：接收 Arduino 回傳（US:xx / AUTOAVOID:ON / US_STREAM:ON 等）
+    await rx.startNotifications();
+    rx.addEventListener("characteristicvaluechanged", handleNotify);
+
+    statusEl.textContent = "已連線: " + (device.name || "(unknown)");
+    setConnectedUI(true);
+    logLine("已連線，通知已開啟");
+  }catch(e){
+    alert("連線失敗: " + e);
+    logLine("連線失敗: " + e);
+  }
+};
+
+// 斷線
+disconnectBtn.onclick = () => disconnect();
+
+function disconnect(){
+  try{
+    if (rx){
+      rx.removeEventListener("characteristicvaluechanged", handleNotify);
+    }
+  }catch(_){}
+
+  if (device && device.gatt && device.gatt.connected){
+    device.gatt.disconnect();
+  } else {
+    onDisconnected();
+  }
+}
+
+function onDisconnected(){
+  tx = null; rx = null;
+  uartService = null;
+  server = null;
+
+  statusEl.textContent = "尚未連線";
+  setConnectedUI(false);
+  logLine("藍牙已斷線");
+}
+
+// 寫入（WebBT 常見限制一次 20 bytes 左右，保險起見做切片）
+async function writeLine(str){
+  if(!tx){
+    alert("請先連線 BLE");
+    return;
+  }
+  const data = new TextEncoder().encode(str);
+
+  // 20 bytes 分包（含換行）
+  const CHUNK = 20;
+  for(let i=0;i<data.length;i+=CHUNK){
+    const chunk = data.slice(i, i+CHUNK);
+    await tx.writeValue(chunk);
+  }
+  logLine(">>> " + JSON.stringify(str));
+}
+
+// 指令：cmd + speedIndex + \n
+function sendMove(cmd){
+  const line = cmd + String(speedIndex) + "\n";
+  writeLine(line);
+}
+
+// 表情：保持你原做法（用 0 當速度字尾）
+function sendGesture(cmd){
+  const line = cmd + "0\n";
+  writeLine(line);
+}
+
+// 超音波：依 Arduino 端邏輯也要附 speedIndex（最後一碼會被拿去當速度）
+function sendUltra(cmd){
+  const line = cmd + String(speedIndex) + "\n";
+  writeLine(line);
+}
+
+// 超音波互動按鈕
+btnUsOnce.onclick   = () => sendUltra("ultrasound");
+btnAutoOn.onclick   = () => sendUltra("autoavoid_on");
+btnAutoOff.onclick  = () => sendUltra("autoavoid_off");
+btnStreamOn.onclick = () => sendUltra("us_stream_on");
+btnStreamOff.onclick= () => sendUltra("us_stream_off");
+
+// 解析通知（Arduino 端回傳：
+// "US:12", "AUTOAVOID:ON", "US_STREAM:ON", "AVOID:10" 等）
+function handleNotify(event){
+  const value = event.target.value;
+  const chunk = new TextDecoder().decode(value);
+
+  rxBuffer += chunk;
+
+  // 盡量以換行切割（Arduino 用 println 會有 \r\n）
+  let idx;
+  while ((idx = rxBuffer.indexOf("\n")) !== -1){
+    const line = rxBuffer.slice(0, idx).trim();
+    rxBuffer = rxBuffer.slice(idx + 1);
+
+    if(!line) continue;
+    logLine("<<< " + line);
+    applyIncoming(line);
+  }
+
+  // 若對端沒送換行，也嘗試處理單行關鍵字（保底）
+  if (rxBuffer.length > 200){
+    rxBuffer = rxBuffer.slice(-200);
+  }
+}
+
+function applyIncoming(line){
+  // 距離
+  if (line.startsWith("US:")){
+    const v = parseInt(line.slice(3), 10);
+    if (!Number.isNaN(v)) usValueEl.textContent = String(v);
+    return;
+  }
+  if (line.startsWith("AVOID:")){
+    const v = parseInt(line.slice(6), 10);
+    if (!Number.isNaN(v)) usValueEl.textContent = String(v);
+    return;
+  }
+
+  // 狀態徽章
+  if (line.startsWith("AUTOAVOID:")){
+    const s = line.slice("AUTOAVOID:".length).trim().toUpperCase();
+    autoBadgeEl.textContent = "AUTOAVOID:" + s;
+    return;
+  }
+  if (line.startsWith("US_STREAM:")){
+    const s = line.slice("US_STREAM:".length).trim().toUpperCase();
+    streamBadgeEl.textContent = "US_STREAM:" + s;
+    return;
+  }
+}
+
+// 初始 UI
+setConnectedUI(false);
+</script>
+</body>
+</html>
